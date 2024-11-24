@@ -3,12 +3,26 @@
   
   # Basic connector configuration without external dependencies
   connection: {
-    fields: [],
+    fields: [
+      {
+        name: 'rate_limit',
+        label: 'Rate Limit',
+        type: 'integer',
+        optional: true,
+        default: 100,
+        hint: 'Maximum number of API calls per hour.'
+      }
+    ],
     authorization: { type: 'none' },
     base_uri: ->() { 'dummy_uri' }
   },
 
-  test: ->(connection) { true },
+  test: ->(connection) {
+    {
+      success: true,
+      message: 'Successfully connected to scheduling service.'
+    }
+  },
 
   pick_lists: {
     timezone_list: -> {
@@ -37,18 +51,20 @@
       error(message)
     },
 
+    log_error: ->(args) {
+      puts({ error: args[:error], details: args[:details] }.to_json)
+    },
+
     # Logger for all types of logs
     logger: ->(args) {
-      level = args[:level]
-      message = args[:message]
-      context = args[:context] || {}
-
       log_message = {
-        level: level.upcase,
+        level: args[:level].upcase,
         timestamp: Time.now.utc.iso8601,
-        message: message,
-        context: context
+        message: args[:message],
+        context: args[:context] || {}
       }
+      puts log_message.to_json
+    },
 
       puts log_message.to_json
     },
@@ -82,6 +98,7 @@
       end
       node
     },
+    
     # Calculates balance factor for AVL tree
     balance_factor: ->(connection, node) {
         # positive = right heavy, negative = left heavy
@@ -349,33 +366,22 @@
       end
     },
 
-    # Validates a single busy slot input
-    validate_busy_slot: ->(args) {
-      slot = args[:slot]
-
-      # Check for required fields
-      %w(start end).each do |field|
-        if slot[field].nil? || slot[field].to_s.strip.empty?
-          call(:error_handler, { message: "Missing required field: #{field}", details: slot })
+    validate_busy_slots: ->(args) {
+      busy_slots = args[:busy_slots]
+      busy_slots.each do |slot|
+        unless slot.key?('calendars')
+          call(:error_handler, { message: "Missing 'calendars' key in busy_slots.", details: slot })
         end
-      end
-
-      # Validate time format - Using regular expression instead of Time.parse
-      if !slot['start'].match?(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})?$/) || 
-         !slot['end'].match?(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})?$/)
-        call(:error_handler, { message: "Invalid time format for busy slot.", details: slot })
-      end
-
-      # Extract time components and compare - Assuming UTC for simplicity
-      start_time_parts = slot['start'].match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/)
-      end_time_parts = slot['end'].match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/)
-
-      start_time_value = Time.utc(*start_time_parts[1..6].map(&:to_i))
-      end_time_value = Time.utc(*end_time_parts[1..6].map(&:to_i))
-
-      # Check if end time is after start time
-      if end_time_value <= start_time_value
-        call(:error_handler, { message: "Invalid busy slot: end time must be after start time.", details: slot })
+        slot['calendars'].each do |_, calendar|
+          next unless calendar.key?('busy')
+          calendar['busy'].each do |interval|
+            %w(start end).each do |field|
+              unless interval[field].match?(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})?$/)
+                call(:error_handler, { message: "Invalid time format for #{field}: #{interval[field]}", details: interval })
+              end
+            end
+          end
+        end
       end
     }
   },
@@ -391,6 +397,22 @@
       # Define input structure for the action
       input_fields: -> {
         [
+          {
+            name: 'duration',
+            label: 'Meeting Duration',
+            type: 'integer',
+            control_type: 'select',
+            pick_list: 'duration_list',
+            optional: true,
+            hint: 'Duration in minutes'
+          },
+          {
+            name: 'page_size',
+            type: 'integer',
+            optional: true,
+            default: 100,
+            hint: 'Number of slots to return'
+          },
           {
             name: 'schedules',
             label: 'Schedules',
